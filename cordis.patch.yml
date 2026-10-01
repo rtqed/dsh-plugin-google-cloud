@@ -1,0 +1,10 @@
+# The dsh-plugin-google-cloud bundle patch: mounts the Vertex AI express
+# adapter. The route is always registered; requests without a resolvable
+# GOOGLE_CLOUD_API_KEY fail loud with MISSING_CREDENTIAL, naming where to
+# store the key. All fields carry schema defaults and stay editable live
+# through the `google-cloud:` settings section.
+- insert:
+    - id: google-cloud
+      name: dsh-plugin-google-cloud
+      config:
+        apiKeyEnv: GOOGLE_CLOUD_API_KEY
