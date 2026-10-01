@@ -7,6 +7,26 @@
 // config-form snapshot.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DEFAULT_IMAGE_MODEL, IMAGE_ASPECT_RATIOS, IMAGE_MODELS, MAX_IMAGE_COUNT } from '../lib/image-catalog.js';
+
+/**
+ * Flatten a shim-rendered element tree into its element list.
+ * @param {unknown} node - one rendered node.
+ * @param {object[]} [out] - accumulator.
+ * @returns {object[]} every element in render order.
+ */
+function flatten(node, out = []) {
+	if (node === null || node === undefined || typeof node === 'boolean') return out;
+	if (Array.isArray(node)) {
+		for (const child of node) flatten(child, out);
+		return out;
+	}
+	if (typeof node === 'object' && node.type !== undefined) {
+		out.push(node);
+		flatten(node.props?.children, out);
+	}
+	return out;
+}
 
 /** Minimal React shim: the bundle only needs the hooks and the jsx factories. */
 const rendering = { hooks: [], index: 0 };
@@ -64,7 +84,20 @@ test('apply() registers the row configuration page and the models card', () => {
 	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
 
 	const controller = {
-		getSnapshot: () => ({ status: 'ready', value: { authMode: 'express', region: 'global', tier: 'standard' }, revision: 3, writable: true }),
+		getSnapshot: () => ({
+			status: 'ready',
+			value: {
+				authMode: 'express',
+				region: 'global',
+				tier: 'standard',
+				imageToolEnabled: true,
+				imageModel: 'gemini-3-pro-image',
+				imageAspectRatio: '16:9',
+				imageCount: 2,
+			},
+			revision: 3,
+			writable: true,
+		}),
 		subscribe: () => () => {},
 		mutate: async () => true,
 	};
@@ -131,9 +164,59 @@ test('apply() registers the row configuration page and the models card', () => {
 	assert.match(summary.props.children, /区域 global/);
 	assert.match(summary.props.children, /档位 standard/);
 
+	rendering.hooks = [];
+	rendering.index = 0;
 	const page = row.component({ ...row.options.inject(), view: 'page' });
 	assert.equal(page.type, 'div');
 	assert.match(page.props.className, /dsh-gc-card/);
+
+	// The card renders its body only while the disclosure is open. The shim keeps
+	// hook state by index, so seed the open flag and render the page again: that
+	// yields the body component, which is where every field lives.
+	rendering.hooks = [true];
+	rendering.index = 0;
+	const opened = row.component({ ...row.options.inject(), view: 'page' });
+	const body = flatten(opened).find((element) => typeof element.type === 'function');
+	assert.ok(body, 'the disclosure renders the configuration form');
+
+	rendering.hooks = [];
+	rendering.index = 0;
+	// The image-generation controls live on this page, and the stored values
+	// reach them exactly as the schema resolved them.
+	const elements = flatten(body.type(body.props));
+	const labels = elements
+		.filter((element) => element.type === 'span' && typeof element.props.className === 'string' && element.props.className.includes('dsh-gc-field-label'))
+		.map((element) => element.props.children);
+	assert.ok(labels.includes('图像生成工具 (generate_image)'), 'the image field is on the page');
+
+	const checkbox = elements.find((element) => element.type === 'input' && element.props.type === 'checkbox');
+	assert.equal(checkbox.props.checked, true, 'the tool ships enabled');
+
+	// The form carries several dropdowns (region among them), so each image
+	// control is identified by the choice set it offers, not by position.
+	const selects = elements.filter((element) => element.type === 'select');
+	const modelSelect = selects.find((element) => element.props.children.some((option) => option.props.value === DEFAULT_IMAGE_MODEL));
+	assert.ok(modelSelect, 'the image model dropdown is on the page');
+	assert.equal(modelSelect.props.value, 'gemini-3-pro-image', 'the stored image model is selected');
+	assert.deepEqual(
+		modelSelect.props.children.map((option) => option.props.value),
+		IMAGE_MODELS.map((model) => model.id),
+		'every catalog image model is offered',
+	);
+
+	const aspectSelect = selects.find((element) =>
+		element.props.children.length === IMAGE_ASPECT_RATIOS.length
+		&& element.props.children.every((option, index) => option.props.value === IMAGE_ASPECT_RATIOS[index]),
+	);
+	assert.ok(aspectSelect, 'the aspect-ratio dropdown offers exactly the verified ratios');
+	assert.equal(aspectSelect.props.value, '16:9', 'the stored aspect ratio is selected');
+
+	const count = elements.find((element) =>
+		element.type === 'input' && element.props.type === 'number' && Number(element.props.max) === MAX_IMAGE_COUNT,
+	);
+	assert.ok(count, 'the batch-size control caps at the deployment limit');
+	assert.equal(Number(count.props.value), 2, 'the stored count reaches the control');
+	assert.equal(Number(count.props.min), 1);
 });
 
 test('the card reports a page that cannot reach host configuration instead of rendering undefined values', () => {
