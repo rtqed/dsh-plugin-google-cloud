@@ -144,6 +144,14 @@ DSH 运行时的流式块只有 `text` / `reasoning` / `tool-call` 三种，模�
 npm test        # node --import ./test/harness-loader.mjs --test test/
 ```
 
+### 打包发布物
+
+```sh
+npm pack --pack-destination dist   # 生成 dist/dsh-plugin-google-cloud-<version>.tgz
+```
+
+包内只包含 `package.json#files` 列出的内容（`lib/*.js`、`cordis.patch.yml`、`README.zh.md`）。打包产物（`**/dist/*.tgz`）不纳入版本库，可随时从源码重建。
+
 `test/harness-loader.mjs` 让测试从**当前安装的 DSH 运行时**解析 `@deepseek-ai/*`（默认 `C:\Program Files\DSH Desktop\resources\app\node_modules`，可用 `DSH_APP_MODULES` 覆盖），因此测试跑的是插件在实际宿主里会拿到的那一份模块实例；未安装该运行时则回退到本地依赖树。
 
 逐文件运行（本仓库验证时使用的方式，避免 `node --test` 在受限环境下的子进程问题）：
