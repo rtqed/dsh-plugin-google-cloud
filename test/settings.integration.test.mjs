@@ -13,6 +13,7 @@ import { isVolatile, updateVolatile, volatileEntries } from '@deepseek-ai/cosmok
 import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm';
 import SettingsForms from '@deepseek-ai/dsh-settings';
 import { Config, NS } from '../lib/index.js';
+import { DEFAULT_IMAGE_MODEL } from '../lib/image-catalog.js';
 
 /** Resolve the plugin Config exactly as the loader does for a volatile root. */
 function resolveConfig(raw) {
@@ -88,10 +89,19 @@ test('describe() publishes the whole Config as one live form and honours auto: f
 	assert.equal(descriptor.value.apiKeyEnv, 'GOOGLE_CLOUD_API_KEY', 'defaults are projected');
 	assert.deepEqual(Object.keys(descriptor.value).sort(), [
 		'apiKeyEnv', 'authMode', 'customModels', 'displayName', 'endpoint',
+		'imageAspectRatio', 'imageCount', 'imageModel', 'imageToolEnabled',
 		'projectId', 'region', 'serviceAccountJsonEnv', 'streamIdleTimeoutMs', 'tier',
 	]);
 	assert.ok(descriptor.schema, 'the form schema is published to clients');
 	assert.match(JSON.stringify(descriptor.schema), /streamIdleTimeoutMs/, 'the schema describes the declared fields');
+
+	// The image-generation fields are ordinary live config: the tool reads them
+	// through the same reference on every call, so an edit needs no remount.
+	assert.equal(descriptor.value.imageToolEnabled, true, 'the image tool ships enabled');
+	assert.equal(descriptor.value.imageModel, DEFAULT_IMAGE_MODEL);
+	assert.equal(descriptor.value.imageAspectRatio, '1:1');
+	assert.equal(descriptor.value.imageCount, 1);
+	assert.match(JSON.stringify(descriptor.schema), /imageModel/, 'the schema publishes the image settings');
 
 	// The plugin ships its own page, so its `apply` opts the entry out.
 	forms.configure({ auto: false }, entry.fiber);
