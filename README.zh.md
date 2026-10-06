@@ -6,14 +6,14 @@
 
 支持流式输出、工具调用、思考等级、图片输入、PayGo 服务档位（standard / priority / flex），以及生图工具 `generate_image`（Gemini 图像模型 / Imagen 4，图片直接显示在对话里）。
 
-> 兼容性：本版本面向 DSH `0.2.0-rc.2` 运行时（`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment` 均以该版本作为 `peerDependencies`，由运行时提供，插件不再自带旧版副本）。
+> 兼容性：本版本面向 DSH `0.1.5-rc.2` 运行时（分支 `v0.1.5-rc.2`；面向 `0.2.0-rc.2` 的实现见默认分支 `main`）（`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment` 均以该版本作为 `peerDependencies`，由运行时提供，插件不再自带旧版副本）。
 
 ## 安装
 
 发布物为标准 npm 插件包（`.tgz` 格式）。推荐在 DSH 的 **设置 -> 插件** 界面里安装该 `.tgz`；也可以使用 CLI：
 
 ```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.0.tgz
+dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.7.0.tgz
 ```
 
 升级时先用 `dsh plugin remove dsh-plugin-google-cloud` 移除旧版，再执行上述添加命令，然后重启应用以加载新的模块。
@@ -35,7 +35,7 @@ dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.0.tgz
 
 ## 配置
 
-插件的全部配置项都是 **volatile（热更新）字段**，唯一权威存储位置是**挂载该插件的 profile 条目自身的 `config` 块**（即 `~/.dsh/profiles/<profile>/cordis.patch.yml` 里该行的 `config:`），设置界面读写的也是它。修改后下一个请求起即时生效，无需重启，也不会重挂载插件。
+插件的全部配置项注册为插件自己的设置命名空间（namespace `google-cloud`），值由 **组合层 + 用户层** 合并解析：挂载该插件的 profile 条目的 `config` 块（`~/.dsh/profiles/<profile>/cordis.patch.yml`）是部署默认值，设置界面把改动写进 `~/.dsh/settings.yaml` 的 `google-cloud:` 段作为用户覆盖层。修改后下一个请求起即时生效，无需重启，也不会重挂载插件。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -54,7 +54,7 @@ dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.0.tgz
 | `imageAspectRatio` | `1:1` | 默认生图宽高比：`1:1` / `16:9` / `9:16` / `4:3` / `3:4` |
 | `imageCount` | `1` | 每次生图默认张数（1–4，**按张计费**） |
 
-> 旧版曾在 `~/.dsh/settings.yaml` 里维护 `google-cloud:` 段；当前运行时已改为由 profile 条目配置块承载，settings.yaml 只会在首次启动时被迁移导入一次。
+> 设置界面（插件配置卡片 / 模型设置页）写入 `~/.dsh/settings.yaml` 的 `google-cloud:` 段，且只保存被显式改过的字段；其余字段继续从 profile 条目的 `config` 块继承，因此「恢复默认」等价于从用户层移除该键。
 
 ### 区域与端点
 
@@ -84,7 +84,7 @@ dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.0.tgz
 - **工具调用**：Gemini 3+ 模型带 tool-call id 并接受完整 JSON Schema（`parametersJsonSchema`）；2.5 系走 OpenAPI 子集（`parameters`）。
 - **思考等级**：minimal / low / medium / high 映射到 `thinkingLevel`（Gemini 3）或 `thinkingBudget`（Gemini 2.5）。
 - **思考签名**：`thoughtSignature` 经适配器私有回放信封随 assistant 历史回传（限同一 provider/model），缺失时优雅降级。
-- **图片**：用户消息与工具结果中的图片经 attachment 服务规范化后按路由目标（总像素 2048×2048、单图编码 1 MiB）生成确定性请求版本并以 `inlineData` 发送；请求图片总量超出每请求 20 MiB（base64 计）上限时，适配器以 `IMAGE_OFFLOAD_REQUIRED` 报告还需省略多少张最旧的图片，由 `dsh-compaction-image-offload` 记录并重试，已在历史中标记 `offloaded` 的图片一律替换为统一占位文本。system/assistant 消息中的图片以 `UNSUPPORTED_CONTENT` 拒绝。
+- **图片**：用户消息与工具结果中的图片经 attachment 服务规范化后按路由目标（总像素 2048×2048、单图编码 1 MiB）生成确定性请求版本并以 `inlineData` 发送；请求图片总量超出每请求 20 MiB（base64 计）上限时，适配器按该预算从最旧的一张起整张省略，被省略的图片替换为统一占位文本（含原始尺寸与规范化路径），请求照常发出（该运行时没有 `IMAGE_OFFLOAD_REQUIRED` 回执协议，投影决策由适配器自己做出）。system/assistant 消息中的图片以 `UNSUPPORTED_CONTENT` 拒绝。
 - **生图**：工具 `generate_image` 调用 Gemini 图像模型或 Imagen 4，图片写入 attachment 服务后以图片块返回，详见下文「生图工具」。
 - **错误与重试**：429→`RATE_LIMIT`、401/403→`AUTH`、5xx→`SERVER`、400→`INVALID_REQUEST`、404→`MODEL_NOT_FOUND`，遵循 harness 默认重试策略；凭据缺失在请求前 fail-loud（`MISSING_CREDENTIAL`）。
 
@@ -92,9 +92,9 @@ dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.0.tgz
 
 本插件内置 DSH Web Client 界面支持，可以直接在 DSH UI 中可视化修改配置与凭据：
 
-1. **方式一（插件配置页）**：打开 **设置 -> 插件 ->（本插件条目 -> 展开配置）**，即可修改 API 密钥、区域、项目 ID、PayGo 档位、端点与超时时间，支持草稿暂存、保存、放弃与恢复默认。该页面同时在本插件条目旁提供一行摘要（模式 / 区域 / 档位）。
+1. **方式一（插件配置卡片）**：打开 **设置 -> 插件 -> 可配置插件**，本插件卡片经 `settings.plugin.item` 槽按命名空间 `google-cloud` 分发，展开后即可修改 API 密钥、区域、项目 ID、PayGo 档位、端点与超时时间，支持草稿暂存、保存、放弃与恢复默认。
 2. **方式二（模型设置页）**：打开 **设置 -> 模型**，在 **Google Vertex AI** 卡片上点击「⚙️ 配置 Vertex AI 参数」即可展开就地配置抽屉。
-3. **方式三（配置文件）**：直接编辑 profile 的 `cordis.patch.yml` 中该条目的 `config:` 块（见上文「配置」）。
+3. **方式三（配置文件）**：直接编辑 `~/.dsh/settings.yaml` 的 `google-cloud:` 段（用户覆盖层），或 profile 的 `cordis.patch.yml` 中该条目的 `config:` 块（组合层默认值，见上文「配置」）。
 
 ## 生图工具（generate_image）
 
@@ -152,7 +152,7 @@ npm pack --pack-destination dist   # 生成 dist/dsh-plugin-google-cloud-<versio
 
 包内只包含 `package.json#files` 列出的内容（`lib/*.js`、`cordis.patch.yml`、`README.zh.md`）。打包产物（`**/dist/*.tgz`）不纳入版本库，可随时从源码重建。
 
-`test/harness-loader.mjs` 让测试从**当前安装的 DSH 运行时**解析 `@deepseek-ai/*`（默认 `C:\Program Files\DSH Desktop\resources\app\node_modules`，可用 `DSH_APP_MODULES` 覆盖），因此测试跑的是插件在实际宿主里会拿到的那一份模块实例；未安装该运行时则回退到本地依赖树。
+`test/harness-loader.mjs` 让测试从**运行时模块目录**解析 `@deepseek-ai/*`（默认 `C:\Program Files\DSH Desktop\resources\app\node_modules`，可用 `DSH_APP_MODULES` 覆盖）。本分支面向 DSH `0.1.5-rc.2`，验证时把 `DSH_APP_MODULES` 指向该版本的运行时目录（例如 `vendor/dsh-runtime/0.1.5-rc.2` 展开后的 `node_modules`），测试跑的就是插件在实际宿主里会拿到的那一份模块实例；未提供时回退到本地依赖树。
 
 逐文件运行（本仓库验证时使用的方式，避免 `node --test` 在受限环境下的子进程问题）：
 
@@ -167,7 +167,7 @@ node --import ./test/harness-loader.mjs test/plugin.integration.test.mjs
 node --import ./test/harness-loader.mjs test/client.test.mjs
 ```
 
-测试覆盖：请求/流式线格式与错误映射（`adapter`、`convert`、`endpoint`、`catalog`）、生图工具的线格式/解析/拒绝路径与内容块（`imagegen`，离线 stub 传输）、真实 `@deepseek-ai/dsh-settings` 的配置描述与写入（`settings.integration`）、真实 Cordis 上下文 + `LlmRuntime` + `ToolRuntime` + 真实 `LocalAttachmentStore` 的完整注册、端到端取流与一次真实落盘的生图调用（`plugin.integration`）、以及客户端 bundle 的槽位注册与渲染（`client`）。
+测试覆盖：请求/流式线格式与错误映射（`adapter`、`convert`、`endpoint`、`catalog`）、生图工具的线格式/解析/拒绝路径与内容块（`imagegen`，离线 stub 传输）、真实 `@deepseek-ai/dsh-settings` + `@deepseek-ai/dsh-settings-file` 的命名空间注册、描述、落盘与版本冲突拒绝（`settings.integration`）、真实 Cordis 上下文 + `LlmRuntime` + `ToolRuntime` + 真实 `LocalAttachmentStore` 的完整注册、端到端取流与一次真实落盘的生图调用（`plugin.integration`）、以及客户端 bundle 的槽位注册与渲染（`client`）。
 
 ## 已知边界
 

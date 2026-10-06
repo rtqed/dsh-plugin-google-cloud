@@ -2,7 +2,7 @@
 // with a mocked fetch. Verifies the Vertex AI express wire format end to end:
 // global endpoint, ?key= auth, attribution headers, SSE parsing, chunk output.
 import assert from 'node:assert/strict';
-import { LlmError } from '@deepseek-ai/dsh-llm';
+import { LlmError, offloadedImageText } from '@deepseek-ai/dsh-llm';
 import { VertexExpressAdapter } from '../lib/adapter.js';
 import { CATALOG } from '../lib/catalog.js';
 import { Config, ROUTE } from '../lib/index.js';
@@ -162,8 +162,8 @@ const userText = (text) => ({ id: 'm1', role: 'user', content: [{ type: 'text', 
 }
 
 // 6. Plugin config schema validates as a StandardSchema and applies defaults.
-// `Config` is root-volatile (the mounting entry's config block is the live
-// authority), so the validated value is the shared reference object.
+// `Config` is the plugin's settings schema: the runtime resolves it from the
+// mounting entry's config block, and the value it resolves is a plain object.
 async function validateConfig(input) {
 	const result = Config['~standard'].validate(input);
 	const validated = result instanceof Promise ? await result : result;
@@ -173,7 +173,7 @@ async function validateConfig(input) {
 {
 	const validated = await validateConfig({});
 	assert.equal(validated.issues, undefined);
-	const value = validated.value.get();
+	const value = validated.value;
 	assert.equal(value.apiKeyEnv, 'GOOGLE_CLOUD_API_KEY');
 	assert.equal(value.region, 'global');
 	assert.equal(value.projectId, '');
@@ -307,10 +307,11 @@ async function validateConfig(input) {
 	);
 }
 
-// 13. Images: the current offload protocol end to end.
-// One attachment, one request version; the adapter stages the version, asks the
-// image-offload surface for more room when the route budget is exceeded, and
-// emits the shared handle text for retained occurrences.
+// 13. Images: this runtime's projection contract end to end.
+// One attachment, one request version; the adapter stages the version, trims the
+// oldest occurrences its representation budget cannot carry (each replaced by the
+// shared offload placeholder), and inlines what remains. DSH 0.1.5-rc.2 has no
+// IMAGE_OFFLOAD_REQUIRED handshake, so the projection decision is the adapter's.
 const IMAGE_REF = Object.freeze({
 	attachmentId: 'sha256:image-1',
 	bytes: 4096,
@@ -327,13 +328,14 @@ const imageMessage = (extra = {}) => ({
 });
 
 function fakeAttachments(bytes) {
+	const sizeOf = typeof bytes === 'function' ? bytes : () => bytes;
 	const staged = [];
 	return {
 		staged,
 		readImageRequest: async (ref, target, signal) => {
 			signal?.throwIfAborted?.();
 			staged.push({ ref, target });
-			return { data: new Uint8Array([1, 2, 3]), mediaType: 'image/webp', width: target.width, height: target.height, bytes };
+			return { data: new Uint8Array([1, 2, 3]), mediaType: 'image/webp', width: target.width, height: target.height, bytes: sizeOf(ref) };
 		},
 	};
 }
@@ -375,24 +377,10 @@ function accessFacts() {
 	assert.equal(parts[1].inlineData.data, Buffer.from([1, 2, 3]).toString('base64'));
 }
 
-// C. A request that still exceeds the route budget reports the shortfall.
+// C. A request version past the route budget is dropped in favour of its
+// placeholder: nothing is inlined, and the request still goes out.
 {
 	const attachments = fakeAttachments(24 * 1024 * 1024);
-	const { adapter, calls } = makeAdapter(() => { throw new Error('must not fetch'); }, defaultConnection(), {
-		resolveAttachments: () => attachments,
-		resolveImageAccess: () => accessFacts(),
-	});
-	await assert.rejects(
-		(async () => { for await (const chunk of adapter.stream(requestOptions([imageMessage()]))) void chunk; })(),
-		(error) => error.failure.code === 'IMAGE_OFFLOAD_REQUIRED' && error.failure.offloadImages === 1,
-	);
-	assert.equal(calls.length, 0);
-}
-
-// D. An occurrence an earlier surface offloaded is replaced by its placeholder;
-// nothing is staged for it and the request still goes out.
-{
-	const attachments = fakeAttachments(4096);
 	const { adapter, calls } = makeAdapter(() => sseResponse([
 		'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n',
 		'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',
@@ -400,14 +388,37 @@ function accessFacts() {
 		resolveAttachments: () => attachments,
 		resolveImageAccess: () => accessFacts(),
 	});
-	const offloaded = imageMessage({ offloaded: true });
-	for await (const chunk of adapter.stream(requestOptions([offloaded]))) void chunk;
-
-	assert.equal(attachments.staged.length, 0, 'offloaded occurrences are never staged');
+	for await (const chunk of adapter.stream(requestOptions([imageMessage()]))) void chunk;
+	assert.equal(calls.length, 1);
 	const parts = JSON.parse(calls[0].init.body).contents[0].parts;
-	assert.match(parts[0].text, /image omitted to fit request image limits/);
-	assert.match(parts[0].text, /"shot\.png" \(sha256:image-1\)/);
-	assert.equal(parts[1], undefined);
+	assert.equal(parts.some((part) => part.inlineData !== undefined), false, 'nothing is inlined past the budget');
+	assert.ok(
+		parts.some((part) => typeof part.text === 'string' && part.text.includes(offloadedImageText(IMAGE_REF, accessFacts()))),
+		'the dropped occurrence keeps its placeholder',
+	);
+}
+
+// D. Over-budget history loses its oldest occurrence only: the newest image is
+// still inlined while the dropped one keeps its placeholder.
+{
+	const attachments = fakeAttachments(12 * 1024 * 1024);
+	const { adapter, calls } = makeAdapter(() => sseResponse([
+		'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n',
+		'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',
+	]), defaultConnection(), {
+		resolveAttachments: () => attachments,
+		resolveImageAccess: () => accessFacts(),
+	});
+	const newest = { ...imageMessage({ attachment: { ...IMAGE_REF, attachmentId: 'sha256:image-2' } }), id: 'm-img-2' };
+	for await (const chunk of adapter.stream(requestOptions([imageMessage(), newest]))) void chunk;
+
+	const parts = JSON.parse(calls[0].init.body).contents.flatMap((content) => content.parts ?? []);
+	assert.equal(attachments.staged.length, 2, 'both request versions are staged before the exact budget is judged');
+	assert.ok(parts.some((part) => part.inlineData !== undefined), 'the newest occurrence is still inlined');
+	assert.ok(
+		parts.some((part) => typeof part.text === 'string' && part.text.includes(offloadedImageText(IMAGE_REF, accessFacts()))),
+		'the oldest occurrence keeps its placeholder',
+	);
 }
 
 // E. prepareCall binds the connection snapshot it prepared from.

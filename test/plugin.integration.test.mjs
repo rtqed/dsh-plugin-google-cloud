@@ -11,9 +11,9 @@ import { dirname, join } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
-import { isVolatile, updateVolatile } from '@deepseek-ai/cosmokit';
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local';
 import LlmRuntime from '@deepseek-ai/dsh-llm';
+import FileSettingsProvider from '@deepseek-ai/dsh-settings-file';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import ToolRuntime from '@deepseek-ai/dsh-tools';
 import {
@@ -30,7 +30,14 @@ import {
  * real `~/.dsh`, so a test never writes user data.
  */
 const ATTACHMENTS_HOME = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '_artifact-check', 'tmp-attachments');
+
+/** The isolated settings home for this run, also outside the real `~/.dsh`. */
+const SETTINGS_HOME = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '_artifact-check', 'tmp-settings-integration');
 rmSync(ATTACHMENTS_HOME, { recursive: true, force: true });
+rmSync(SETTINGS_HOME, { recursive: true, force: true });
+
+/** Monotonic per-mount document index: one settings file per mounted host. */
+let mountSeq = 0;
 
 /** A 2x2 PNG, produced by the same codec the attachment store normalizes with. */
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEklEQVQImWM4ISd3Qk6OAUIBAB8mBBGFRCvEAAAAAElFTkSuQmCC';
@@ -60,6 +67,10 @@ async function mount(config = {}) {
 	await ctx.plugin(ToolRuntime);
 	await ctx.plugin(LocalAttachmentStore, { dshHome: ATTACHMENTS_HOME });
 	await ctx.plugin(LlmRuntime);
+	await ctx.plugin(FileSettingsProvider, {
+		path: join(SETTINGS_HOME, `mount-${mountSeq += 1}.yaml`),
+		watch: false,
+	});
 
 	let pluginCtx;
 	let configRef;
@@ -78,12 +89,15 @@ async function mount(config = {}) {
 	return { ctx, pluginCtx, configRef };
 }
 
+/** Let the settings service's queued watcher tails run: they notify on a microtask. */
+const settleSettings = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
 test('apply() registers one live adapter with the real runtime', async () => {
 	const { ctx, configRef } = await mount({ region: 'us-central1', projectId: 'vertex-proj' });
 
-	assert.ok(isVolatile(configRef), 'a root-volatile Config hands the plugin a live reference');
-	assert.equal(configRef.get().region, 'us-central1');
-	assert.equal(configRef.get().tier, 'standard', 'defaults are resolved for the plugin');
+	assert.equal(configRef.region, 'us-central1', 'the mounting entry reaches the plugin resolved');
+	assert.equal(configRef.tier, 'standard', 'defaults are resolved for the plugin');
+	assert.equal(ctx.settings.get(NS).region, 'us-central1', 'the entry is the section base layer');
 
 	assert.deepEqual(ctx.llm.listProviders(), [{ id: ROUTE, name: 'Google Vertex AI' }]);
 
@@ -128,15 +142,15 @@ test('discovery serves the catalog through the runtime', async () => {
 	);
 });
 
-test('a live config update reaches the adapter and the directory without a remount', async () => {
-	const { ctx, pluginCtx, configRef } = await mount({ displayName: 'Google Vertex AI', region: 'global' });
+test('a live settings write reaches the adapter and the directory without a remount', async () => {
+	const { ctx } = await mount({ displayName: 'Google Vertex AI', region: 'global' });
 
-	// This is exactly what the loader's volatile-only commit does for a root ref.
-	const next = Config['~standard'].validate({ displayName: 'Vertex After Edit', region: 'europe-west1' });
-	updateVolatile(configRef, next.value);
-	pluginCtx.emit('loader/volatile-update', [[]]);
+	// The settings document is the user layer over this entry's config block, and
+	// its watcher is what re-derives the surfaces the plugin registered.
+	await ctx.settings.update(NS, { displayName: 'Vertex After Edit', region: 'europe-west1' });
+	await settleSettings();
 
-	assert.equal(configRef.get().displayName, 'Vertex After Edit');
+	assert.equal(ctx.settings.get(NS).displayName, 'Vertex After Edit');
 	assert.deepEqual(ctx.llm.listProviders(), [{ id: ROUTE, name: 'Vertex After Edit' }]);
 	assert.equal(ctx.llm.listConfigurableProviders()[0].displayName, 'Vertex After Edit');
 
@@ -285,7 +299,7 @@ test('a full runtime call commits a real attachment and returns text plus image 
 	}
 });
 
-test('the image settings are live: the tool follows a volatile config update', async () => {
+test('the image settings are live: the tool follows a settings write', async () => {
 	const calls = [];
 	globalThis.fetch = async (url, init) => {
 		calls.push({ url, init });
@@ -293,22 +307,15 @@ test('the image settings are live: the tool follows a volatile config update', a
 	};
 	process.env.GOOGLE_CLOUD_API_KEY = 'test-api-key';
 	try {
-		const { ctx, pluginCtx, configRef } = await mount({ region: 'global' });
+		const { ctx } = await mount({ region: 'global' });
 		assert.ok(ctx.tools.get('generate_image'), 'registered by default');
 
-		// This is exactly what the loader's volatile-only commit does for a root ref.
-		/** Validate one full candidate config the way the loader does. */
-		const candidate = (overrides) => {
-			const resolved = Config['~standard'].validate({ ...configRef.get(), ...overrides });
-			assert.equal(resolved.issues, undefined, 'the candidate config must validate');
-			return resolved.value;
-		};
-		updateVolatile(configRef, candidate({
+		await ctx.settings.update(NS, {
 			imageModel: 'gemini-3.1-flash-lite-image',
 			imageAspectRatio: '9:16',
 			imageCount: 1,
-		}));
-		pluginCtx.emit('loader/volatile-update', [[]]);
+		});
+		await settleSettings();
 
 		await ctx.tools.execute({
 			name: 'generate_image',
@@ -320,12 +327,12 @@ test('the image settings are live: the tool follows a volatile config update', a
 		assert.match(url.pathname, /gemini-3\.1-flash-lite-image:generateContent$/);
 		assert.deepEqual(JSON.parse(calls[0].init.body).generationConfig.imageConfig, { aspectRatio: '9:16' });
 
-		updateVolatile(configRef, candidate({ imageToolEnabled: false }));
-		pluginCtx.emit('loader/volatile-update', [[]]);
+		await ctx.settings.update(NS, { imageToolEnabled: false });
+		await settleSettings();
 		assert.equal(ctx.tools.get('generate_image'), undefined, 'turning the setting off unregisters the tool');
 
-		updateVolatile(configRef, candidate({ imageToolEnabled: true }));
-		pluginCtx.emit('loader/volatile-update', [[]]);
+		await ctx.settings.update(NS, { imageToolEnabled: true });
+		await settleSettings();
 		assert.ok(ctx.tools.get('generate_image'), 'turning it back on registers the tool again');
 	} finally {
 		globalThis.fetch = undefined;
