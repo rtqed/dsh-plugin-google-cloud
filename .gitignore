@@ -1,0 +1,5 @@
+﻿# Dependency tree and package-manager caches
+node_modules/
+
+# Packed artifacts, reproducible with: npm pack --pack-destination dist
+dist/*.tgz
