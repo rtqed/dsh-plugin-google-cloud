@@ -3,8 +3,13 @@ import test from 'node:test';
 import {
 	CATALOG,
 	DEFAULT_REGION_MODELS,
+	catalogModel,
+	geminiMajorVersion,
 	listModelsForRegion,
 	formatGeminiName,
+	reasoningFamilyOf,
+	requiresToolCallId,
+	thinkingConfigFor,
 } from '../lib/catalog.js';
 
 test('catalog exports and formatGeminiName', () => {
@@ -13,6 +18,36 @@ test('catalog exports and formatGeminiName', () => {
 	assert.equal(formatGeminiName('gemini-2.5-pro'), 'Gemini 2.5 Pro');
 	assert.equal(formatGeminiName('gemini-3.8-flash'), 'Gemini 3.8 Flash');
 	assert.equal(formatGeminiName('claude-3-5-sonnet'), 'Claude 3 5 Sonnet');
+});
+
+test('gemini-4-argon carries its unified 1M window and three thinking levels', () => {
+	const entry = catalogModel('gemini-4-argon');
+	assert.ok(entry, 'the frontier model is in the static catalog');
+	assert.equal(entry.name, 'Gemini 4 Argon');
+	assert.equal(entry.contextWindow, 1048576);
+	assert.equal(entry.maxTokens, 65536);
+	assert.equal(formatGeminiName('gemini-4-argon'), 'Gemini 4 Argon');
+
+	// Vertex serves Argon on the global endpoint and the us/eu multi-regions only.
+	assert.ok(DEFAULT_REGION_MODELS.global.includes('gemini-4-argon'));
+	assert.ok(DEFAULT_REGION_MODELS.us.includes('gemini-4-argon'));
+	assert.ok(DEFAULT_REGION_MODELS.eu.includes('gemini-4-argon'));
+	assert.ok(listModelsForRegion('global').some((model) => model.id === 'gemini-4-argon'));
+	assert.ok(!listModelsForRegion('asia-northeast1').some((model) => model.id === 'gemini-4-argon'));
+
+	// A Gemini 4 id: function calls carry ids and take full JSON Schema parameters.
+	assert.equal(geminiMajorVersion('gemini-4-argon'), 4);
+	assert.equal(requiresToolCallId('gemini-4-argon'), true);
+
+	// Argon is tunable across low/medium/high, so minimal floors to LOW.
+	assert.equal(reasoningFamilyOf('gemini-4-argon'), 'gemini4-argon');
+	assert.deepEqual(thinkingConfigFor('gemini-4-argon', 'minimal'), { includeThoughts: true, thinkingLevel: 'LOW' });
+	assert.deepEqual(thinkingConfigFor('gemini-4-argon', 'low'), { includeThoughts: true, thinkingLevel: 'LOW' });
+	assert.deepEqual(thinkingConfigFor('gemini-4-argon', 'medium'), { includeThoughts: true, thinkingLevel: 'MEDIUM' });
+	assert.deepEqual(thinkingConfigFor('gemini-4-argon', 'high'), { includeThoughts: true, thinkingLevel: 'HIGH' });
+
+	// An unlisted Argon snapshot still resolves to the same wire family.
+	assert.equal(reasoningFamilyOf('gemini-4-argon-exp-2026-10-13'), 'gemini4-argon');
 });
 
 test('listModelsForRegion default and region filtering', () => {
