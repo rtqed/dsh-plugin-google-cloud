@@ -6,14 +6,14 @@
 
 支持流式输出、工具调用、思考等级、图片输入、PayGo 服务档位（standard / priority / flex），以及生图工具 `generate_image`（Gemini 图像模型 / Imagen 4，图片直接显示在对话里）。
 
-> 兼容性：本版本面向 DSH `0.2.0-rc.2` 运行时（`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment` 均以该版本作为 `peerDependencies`，由运行时提供，插件不再自带旧版副本）。
+> 兼容性：本版本面向 DSH `0.2.1-rc.2` 运行时（桌面版 `0.2.1-rc.2`；`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment` 均以该版本作为 `peerDependencies`，由运行时提供，插件不再自带旧版副本）。如需更早的 `0.1.5-rc.2` 运行时，请使用分支 `v0.1.5-rc.2`。
 
 ## 安装
 
 发布物为标准 npm 插件包（`.tgz` 格式）。推荐在 DSH 的 **设置 -> 插件** 界面里安装该 `.tgz`；也可以使用 CLI：
 
 ```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.0.tgz
+dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.1.tgz
 ```
 
 升级时先用 `dsh plugin remove dsh-plugin-google-cloud` 移除旧版，再执行上述添加命令，然后重启应用以加载新的模块。
