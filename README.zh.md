@@ -71,16 +71,17 @@ dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.1.tgz
 | --- | --- | --- | --- |
 | `standard`（标准档 · 默认） | 标准 PayGo 基准价 | 标准延迟与吞吐 | 无限制 |
 | `priority`（优先保障档） | 高于标准价 | 队列优先分配、延迟波动更低、吞吐更稳 | 仅限 global 与 us/eu 多区域端点 |
-| `flex`（低价折扣档） | **约五折优惠** | 尽力而为服务（延迟与排队较高） | 仅限 global 端点 |
+| `flex`（低价折扣档） | **约五折优惠** | 尽力而为服务（延迟与排队较高） | 仅限 global 端点；不支持 `gemini-4-argon` |
 
 - 档位通过 HTTP 头 `X-Vertex-AI-LLM-Shared-Request-Type: flex|priority`（附带 `X-Vertex-AI-LLM-Request-Type: shared`，即纯 PayGo、不走预留吞吐）实现，与 `?key=` 鉴权兼容。
 - 档位与区域组合不满足上表时，请求前 fail-loud（`INVALID_REQUEST`），错误信息指明该改哪个设置。
+- **模型级限制**：`gemini-4-argon` 只提供 Standard PayGo 与 Priority PayGo（另有 Provisioned Throughput 与 Batch，固定配额不支持），Google 模型卡的消费选项里没有 Flex；因此 `flex` + Argon 组合也会在请求前以 `INVALID_REQUEST` 拒绝，并提示改用 standard 或 priority。
 - **验证档位生效**：Google 在响应的 `usageMetadata.trafficType` 里回传实际档位（`ON_DEMAND_FLEX` / `ON_DEMAND_PRIORITY`；standard 为 `ON_DEMAND`）。选择非 standard 档位时，每次响应都会在 Host 日志输出 `google-cloud: request served with trafficType …`，可直接对照确认。
 - 限制（来自 Google 文档）：两个档位均处于 Preview 阶段；flex 模式下整个请求载荷有 20 MB 上限（长对话多图时注意，插件默认图片预算 20 MiB base64 在 flex 下可能触顶）；flex 的超时上限 30 分钟。
 
 ## 能力与语义
 
-- **模型目录**：内置 Vertex 上的 Gemini 系列（3.x flash、3.1 pro、2.5 系、`gemini-flash-latest` 等），目录仅供参考，任何端点认识的模型 id 都可直接使用。
+- **模型目录**：内置 Vertex 上的 Gemini 系列（4 Argon、3.x flash、3.1 pro、2.5 系、`gemini-flash-latest` 等），目录仅供参考，任何端点认识的模型 id 都可直接使用。
 - **工具调用**：Gemini 3+ 模型带 tool-call id 并接受完整 JSON Schema（`parametersJsonSchema`）；2.5 系走 OpenAPI 子集（`parameters`）。
 - **思考等级**：minimal / low / medium / high 映射到 `thinkingLevel`（Gemini 3）或 `thinkingBudget`（Gemini 2.5）。
 - **思考签名**：`thoughtSignature` 经适配器私有回放信封随 assistant 历史回传（限同一 provider/model），缺失时优雅降级。

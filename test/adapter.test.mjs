@@ -307,6 +307,27 @@ async function validateConfig(input) {
 	);
 }
 
+// 12b. Gemini 4 Argon is Standard/Priority PayGo only: flex fails before any request.
+{
+	const { adapter, calls } = makeAdapter(() => { throw new Error('must not fetch'); }, { ...defaultConnection(), tier: 'flex' });
+	await assert.rejects(
+		(async () => {
+			for await (const chunk of adapter.stream(requestOptions([userText('hi')], { provider: ROUTE, model: 'gemini-4-argon' }))) void chunk;
+		})(),
+		(error) => error.failure.code === 'INVALID_REQUEST' && /Flex PayGo is not offered for "gemini-4-argon"/.test(error.failure.message),
+	);
+	assert.equal(calls.length, 0);
+}
+{
+	const { adapter, calls } = makeAdapter(() => sseResponse([
+		'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n',
+		'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',
+	]), { ...defaultConnection(), tier: 'priority' });
+	for await (const chunk of adapter.stream(requestOptions([userText('hi')], { provider: ROUTE, model: 'gemini-4-argon' }))) void chunk;
+	assert.equal(calls[0].init.headers['x-vertex-ai-llm-shared-request-type'], 'priority');
+	assert.match(calls[0].url, /models\/gemini-4-argon:streamGenerateContent/);
+}
+
 // 13. Images: the current offload protocol end to end.
 // One attachment, one request version; the adapter stages the version, asks the
 // image-offload surface for more room when the route budget is exceeded, and

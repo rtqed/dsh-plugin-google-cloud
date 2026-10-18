@@ -4,6 +4,7 @@ import {
 	CATALOG,
 	DEFAULT_REGION_MODELS,
 	catalogModel,
+	flexPaygoServes,
 	geminiMajorVersion,
 	listModelsForRegion,
 	formatGeminiName,
@@ -48,6 +49,12 @@ test('gemini-4-argon carries its unified 1M window and three thinking levels', (
 
 	// An unlisted Argon snapshot still resolves to the same wire family.
 	assert.equal(reasoningFamilyOf('gemini-4-argon-exp-2026-10-13'), 'gemini4-argon');
+
+	// Vertex serves Argon through Standard and Priority PayGo only, never Flex.
+	assert.equal(flexPaygoServes('gemini-4-argon'), false);
+	assert.equal(flexPaygoServes('gemini-4-argon-exp-2026-10-13'), false);
+	assert.equal(flexPaygoServes('gemini-3.8-flash'), true);
+	assert.equal(flexPaygoServes('gemini-2.5-pro'), true);
 });
 
 test('listModelsForRegion default and region filtering', () => {
