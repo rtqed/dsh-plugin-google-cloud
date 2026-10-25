@@ -3,3 +3,7 @@ node_modules/
 
 # Packed artifacts, reproducible with: npm pack --pack-destination dist
 dist/*.tgz
+dist/*.zip
+
+# Staging directory for the self-contained build (npm run bundle)
+_build/

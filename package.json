@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-google-cloud",
   "description": "Google Cloud Vertex AI model provider (API key & Service Account JSON) for the DeepSeek Harness LLM seam, plus the generate_image tool (Gemini image models and Imagen)",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -15,7 +15,8 @@
     "README.zh.md"
   ],
   "scripts": {
-    "test": "node --import ./test/harness-loader.mjs --test test/*.test.mjs"
+    "test": "node --import ./test/harness-loader.mjs --test test/*.test.mjs",
+    "bundle": "node scripts/build-bundled.mjs"
   },
   "engines": {
     "dsh": "^0.2.0-rc.2"

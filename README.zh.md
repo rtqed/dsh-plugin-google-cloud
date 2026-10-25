@@ -16,13 +16,38 @@
 
 ## 安装
 
-发布物为标准 npm 插件包（`.tgz` 格式）。推荐在 DSH 的 **设置 -> 插件** 界面里安装该 `.tgz`；也可以使用 CLI：
+有两种发布物，选一种即可：
+
+### 一键安装包（推荐，自带依赖）
+
+`dsh-plugin-google-cloud-<版本>-bundled.zip`。解压后目录里除了 `lib/`、`cordis.patch.yml`，还带一个 `node_modules/`，内含插件唯一的外部依赖 `@deepseek-ai/schemastery`（及其传递依赖 `@deepseek-ai/cosmokit`、`@standard-schema/spec`）。清单里**没有 `dependencies` 字段**，所以 DSH 的一键安装不会再报「依赖 npm 包，暂不支持一键安装」。
+
+在 DSH 的 **设置 -> 插件** 界面选择这个 zip，或解压后指向解压出来的目录：
 
 ```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.5.tgz
+dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.6-bundled
 ```
 
+### 标准 npm 包（`.tgz`，需要包管理器解析依赖）
+
+`dsh-plugin-google-cloud-<版本>.tgz` 保持 npm 惯例，依赖写在 `dependencies` 里由 `pnpm` 安装。适合能正常联网解析依赖的环境：
+
+```sh
+dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.6.tgz
+```
+
+> 两种包的代码完全相同，只是依赖的提供方式不同。一键安装受限时用 zip，其余情况两者等价。
+
 升级时先用 `dsh plugin remove dsh-plugin-google-cloud` 移除旧版，再执行上述添加命令，然后重启应用以加载新的模块。
+
+### 重新打包
+
+```sh
+npm run bundle      # 生成 dist/dsh-plugin-google-cloud-<版本>-bundled.zip
+npm pack --pack-destination dist   # 生成标准 .tgz
+```
+
+`npm run bundle` 会按 `package.json` 的 `dependencies` 现装一遍闭包、拷进 `_build/bundled/`、再把清单里的 `dependencies` 去掉后压成 zip，所以依赖升级后重跑即可，不必手工搬运。`peerDependencies` 里的 `@deepseek-ai/dsh-*` 与 `@deepseek-ai/cordis` 由宿主提供，**不会**被一起打包——否则插件会加载第二份运行时。
 
 ## 凭据与认证模式
 
