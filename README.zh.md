@@ -10,7 +10,7 @@
 >
 > 该声明是硬性的：DSH 在导入插件前会先把版本要求与自身运行时版本比对，不满足的插件不会被导入，只会作为 `disabled` 条目留下并报告 `incompatible-version`。**判定依据随运行时版本而异**——`0.2.1` 起，插件自己声明的 `engines.dsh` 单独决定（忽略 `peerDependencies`）；而 `0.2.0` 线尚无 `engines.dsh` 这个概念，只校验 `peerDependencies`。因此两处必须声明同一个下界，只改 `engines.dsh` 会在 `0.2.0` 上被静默拒绝加载。也**不要把范围写成 `0.2.1-rc.2` 这类精确的预发布版本**——精确锁定一个 rc 会排除同版本的后续 rc。`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment`、`@deepseek-ai/dsh-attachment`、`@deepseek-ai/dsh-tools` 均由运行时提供（`^0.2.0-rc.2`），插件不再自带旧版副本。
 >
-> 在 `0.2.0-rc.2` 上实测：完整测试套 43 项全部通过（含真实 Cordis 上下文、`LlmRuntime`、`ToolRuntime`、端到端取流与真实落盘的生图调用）。`0.2.0` 线没有正式版，只有 `0.2.0-rc.1` 与 `0.2.0-rc.2`。
+> 在 `0.2.0-rc.2` 上实测：完整测试套 44 项全部通过（含真实 Cordis 上下文、`LlmRuntime`、`ToolRuntime`、端到端取流与真实落盘的生图调用）。`0.2.0` 线没有正式版，只有 `0.2.0-rc.1` 与 `0.2.0-rc.2`。
 >
 > 如需更早的 `0.1.5-rc.2` 运行时，请使用分支 `v0.1.5-rc.2`。
 
@@ -48,9 +48,9 @@ Tavern 把 zip 解压到 `data/plugins/<名字>/`，再用自动生成的 `.tave
 - 走 DSH bundle 安装时，行 id 就是 `cordis.patch.yml` 里写的 `google-cloud`；
 - 走 Tavern 用户插件时，Tavern 自己插入行、自己生成 id（形如 `tavern-user-plugin-dsh-plugin-google-cloud`），插件包里写的任何 id 都对不上。
 
-所以客户端 bundle 不猜 id：它向宿主读可配置提供方目录（`llm.listConfigurableProviders`），取出 `provider === "vertexai"` 那一条的 `settingsNs`，用宿主公布的命名空间去注册卡片；目录读不到时先用自己的 id 占位，读到后重新注册。表单控制器也取自同一个命名空间，因此两种装法下编辑都落在真正被服务的那份配置上。
+所以客户端 bundle 不猜 id，也不依赖任何额外服务：它读**共享设置镜像**（`ctx.configForms.describe()`）当前真正在服务的命名空间列表，从中挑出以本包名结尾的那一个（`tavern-user-plugin-dsh-plugin-google-cloud` 命中 `-dsh-plugin-google-cloud`），用它去注册卡片，并用同一个命名空间取表单控制器；镜像还没答话时先用自己知道的 id 占位，答话后按需重装。订阅镜像而不是轮询，是因为宿主启动后镜像会从空变成有，卡片必须跟着重装一次。
 
-> 在 Tavern 里如果看到「其余字段在 cordis.patch.yml 中，请直接编辑对应段。」，说明卡片没挂上、页面退回了通用编辑器（括号里的就是宿主给这个行生成的命名空间）。0.6.8 起这条退化不会再现。
+> 在 Tavern 里如果看到「其余字段在 cordis.patch.yml 中，请直接编辑对应段。」，说明卡片没挂上、页面退回了通用编辑器（括号里的就是宿主给这个行生成的命名空间）。0.6.9 起这条退化不会再现：在 Tavern 安装 + DSH 0.2.1-rc.3 上实测，「设置 → 模型」的 Vertex AI 行直接渲染出插件自己的卡片（快速模式 / 区域 / 档位 / 参数配置），展开后是完整的认证模式、API Key、区域、模型目录与生图选项。
 
 ### 重新打包
 

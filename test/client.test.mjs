@@ -67,70 +67,83 @@ globalThis.window = {
 globalThis.document = undefined;
 
 await import('../lib/client.js');
-
-/** Let the entry's directory read settle before asserting on what it installed. */
+/** Let the mirror subscription settle before asserting on what was installed. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-test('the bundle registers under the package name and requires the current services', () => {
-	assert.equal(loaded.spec.id, 'dsh-plugin-google-cloud');
-	const exported = loaded.spec.factory((specifier) => {
-		if (specifier === 'react') return reactShim;
-		if (specifier === 'react/jsx-runtime') return jsxRuntimeShim;
-		throw new Error(`unexpected require: ${specifier}`);
-	});
-	assert.equal(typeof exported.apply, 'function');
-	assert.deepEqual(exported.inject, ['slots', 'remote', 'remote.credentials', 'remote.llm', 'configForms']);
-	assert.ok(!exported.inject.includes('settingsScope'), 'the removed service must not be required');
+/**
+ * A settings-mirror stub: the snapshot the entry reads served namespaces from, the
+ * subscription it follows, and a setter that replays a later host answer.
+ * @param namespaces - namespaces the host serves at first.
+ * @returns the mirror stub plus its mutation helper.
+ */
+function mirrorOf(namespaces) {
+	let current = [...namespaces];
+	const listeners = [];
+	return {
+		listeners,
+		ensure: () => {},
+		getSnapshot: () => ({
+			status: current.length === 0 ? 'idle' : 'ready',
+			view: current.length === 0 ? undefined : { namespaces: current.map((ns) => ({ ns })) },
+			error: null,
+		}),
+		subscribe: (listener) => {
+			listeners.push(listener);
+			return () => {
+				const index = listeners.indexOf(listener);
+				if (index >= 0) listeners.splice(index, 1);
+			};
+		},
+		set(next) {
+			current = [...next];
+			for (const listener of [...listeners]) listener();
+		},
+	};
+}
+
+/** A ready config-form controller with the stored values the card renders. */
+const readyController = () => ({
+	getSnapshot: () => ({
+		status: 'ready',
+		value: {
+			authMode: 'express',
+			region: 'global',
+			tier: 'standard',
+			imageToolEnabled: true,
+			imageModel: 'gemini-3-pro-image',
+			imageAspectRatio: '16:9',
+			imageCount: 2,
+		},
+		revision: 3,
+		writable: true,
+	}),
+	subscribe: () => () => {},
+	mutate: async () => true,
 });
 
-test('apply() keys both cards by the namespace the host publishes, not by a guessed id', async () => {
-	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
-
-	const controller = {
-		getSnapshot: () => ({
-			status: 'ready',
-			value: {
-				authMode: 'express',
-				region: 'global',
-				tier: 'standard',
-				imageToolEnabled: true,
-				imageModel: 'gemini-3-pro-image',
-				imageAspectRatio: '16:9',
-				imageCount: 2,
-			},
-			revision: 3,
-			writable: true,
-		}),
-		subscribe: () => () => {},
-		mutate: async () => true,
-	};
-	// The row a user-plugin loader inserted carries an id it generated itself, so the
-	// bundle's own ids never name it: only the provider directory does.
-	const servedNs = 'tavern-user-plugin-dsh-plugin-google-cloud';
+/**
+ * A client context stub covering the services the entry touches.
+ * @param options - the mount id, the mirror, the controller, and the served set the
+ *   `whileServed` stub reports (defaults to everything it was asked about).
+ * @returns the context plus the recording arrays the assertions read.
+ */
+function clientContext({ entryId = 'google-cloud', mirror, controller = readyController(), served }) {
 	const requestedNamespaces = [];
 	const watched = [];
 	const injected = [];
 	const registrations = [];
 	const effects = [];
 	const ctx = {
-		fiber: { entry: { options: { id: 'dsh-plugin-google-cloud' } } },
-		remote: {
-			llm: {
-				listConfigurableProviders: async () => ([
-					{ provider: 'vertexai', displayName: 'Google Vertex AI', settingsNs: servedNs, settingsPath: [], declared: false },
-					{ provider: 'some-other-route', settingsNs: 'llm-other', settingsPath: [], declared: false },
-				]),
-			},
-		},
+		fiber: { entry: { options: { id: entryId } } },
 		configForms: {
+			describe: () => mirror,
 			get: (ns) => {
 				requestedNamespaces.push(ns);
 				return controller;
 			},
 			whileServed: (namespaces, register) => {
 				watched.push(namespaces);
-				// Only the host-generated id is really served; the bundle's own ids are not.
-				return register(new Set([servedNs]));
+				return register(served ?? new Set(namespaces));
 			},
 		},
 		slots: {
@@ -150,24 +163,45 @@ test('apply() keys both cards by the namespace the host publishes, not by a gues
 			return body();
 		},
 	};
+	return { ctx, requestedNamespaces, watched, injected, registrations, effects };
+}
+
+test('the bundle registers under the package name and requires the current services', () => {
+	assert.equal(loaded.spec.id, 'dsh-plugin-google-cloud');
+	const exported = loaded.spec.factory((specifier) => {
+		if (specifier === 'react') return reactShim;
+		if (specifier === 'react/jsx-runtime') return jsxRuntimeShim;
+		throw new Error(`unexpected require: ${specifier}`);
+	});
+	assert.equal(typeof exported.apply, 'function');
+	assert.deepEqual(exported.inject, ['slots', 'remote', 'remote.credentials', 'configForms']);
+	assert.ok(!exported.inject.includes('settingsScope'), 'the removed service must not be required');
+});
+
+test('apply() keys both cards by the namespace the host serves, not by a guessed id', async () => {
+	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
+	// The row a user-plugin loader inserted carries an id it generated itself, so the
+	// bundle's own ids never name it: only the mirror's served list does.
+	const servedNs = 'tavern-user-plugin-dsh-plugin-google-cloud';
+	const mirror = mirrorOf(['llm-deepseek', servedNs]);
+	const { ctx, requestedNamespaces, watched, injected, registrations, effects } = clientContext({
+		entryId: 'dsh-plugin-google-cloud',
+		mirror,
+		served: new Set([servedNs]),
+	});
 
 	exported.apply(ctx);
 	await flush();
 
 	assert.deepEqual(effects, ['dsh-plugin-google-cloud: settings surfaces']);
-	// The first install runs on the bundle's own ids and registers nothing, because the
-	// host serves none of them; the directory then supplies the id that does match.
-	assert.deepEqual(watched, [
-		['google-cloud', 'dsh-plugin-google-cloud'],
-		[servedNs, 'google-cloud', 'dsh-plugin-google-cloud'],
-	]);
+	assert.deepEqual(watched, [[servedNs, 'google-cloud', 'dsh-plugin-google-cloud']]);
 	assert.deepEqual(requestedNamespaces, [servedNs], 'the controller is the served namespace\'s, never a guessed one');
 	assert.deepEqual(injected, ['plugins.row.config', 'settings.models.provider-card']);
 	assert.equal(registrations.length, 2);
 
 	const row = registrations.find((entry) => entry.options.name === 'plugins.row.config');
 	assert.equal(row.options.key, `dsh-plugin-google-cloud#${servedNs}`, 'the row key is <package>#<row id>');
-	assert.equal(row.options.inject().scope, controller);
+	assert.equal(row.options.inject().scope, ctx.configForms.get(servedNs));
 	assert.equal(row.options.inject().ctx, ctx);
 
 	const models = registrations.find((entry) => entry.options.name === 'settings.models.provider-card');
@@ -240,41 +274,50 @@ test('apply() keys both cards by the namespace the host publishes, not by a gues
 	assert.equal(Number(count.props.min), 1);
 });
 
-test('a bundle mount resolves to the ids it already had, so the pages are installed once', async () => {
+test('the entry follows the mirror from empty to served, and installs once when the set settles', async () => {
 	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
-	const watched = [];
-	const ctx = {
-		fiber: { entry: { options: { id: 'google-cloud' } } },
-		remote: {
-			llm: {
-				listConfigurableProviders: async () => ([
-					{ provider: 'vertexai', displayName: 'Google Vertex AI', settingsNs: 'google-cloud', settingsPath: [], declared: false },
-				]),
-			},
-		},
-		configForms: {
-			get: () => ({ getSnapshot: () => ({ status: 'idle', value: undefined }), subscribe: () => () => {} }),
-			whileServed: (namespaces, register) => {
-				watched.push(namespaces);
-				return register(new Set(namespaces));
-			},
-		},
-		slots: {
-			inject: (name, body) => {
-				const iterator = body();
-				iterator.next();
-				return () => {};
-			},
-			register: () => () => {},
-		},
-		effect: (body) => body(),
-	};
+	const servedNs = 'tavern-user-plugin-dsh-plugin-google-cloud';
+	const mirror = mirrorOf([]);
+	const { ctx, registrations, watched } = clientContext({
+		entryId: 'dsh-plugin-google-cloud',
+		mirror,
+		served: new Set([servedNs]),
+	});
+
+	exported.apply(ctx);
+	await flush();
+	assert.equal(watched.length, 1, 'an empty mirror still installs a watch on the ids this bundle names');
+	assert.equal(registrations.length, 0, 'nothing is registered while no namespace is served');
+
+	// The host answers later, exactly as the shared describe read settles after boot.
+	mirror.set(['llm-deepseek', servedNs]);
+	assert.deepEqual(watched.at(-1), [servedNs, 'google-cloud', 'dsh-plugin-google-cloud']);
+	assert.equal(registrations.length, 2, 'the served namespace keys both cards');
+	assert.equal(registrations.find((entry) => entry.options.name === 'settings.models.provider-card').options.key, servedNs);
+
+	// A second identical answer changes nothing.
+	mirror.set(['llm-deepseek', servedNs]);
+	assert.equal(registrations.length, 2, 'the installed key set is not re-registered');
+});
+
+test('a bundle mount keeps the ids it already named', async () => {
+	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
+	const mirror = mirrorOf(['llm-deepseek', 'google-cloud']);
+	const { ctx, watched, registrations } = clientContext({
+		// The client Loader names the entry it creates for a bundle mount with a
+		// generated id; the patch's row id is the one the host serves.
+		entryId: '253304e5',
+		mirror,
+		served: new Set(['google-cloud']),
+	});
 
 	exported.apply(ctx);
 	await flush();
 
-	assert.equal(watched.length, 1, 'the directory answer adds no id the bundle already named');
-	assert.deepEqual(watched[0], ['google-cloud']);
+	assert.deepEqual(watched, [['google-cloud', '253304e5']], 'the mirror answer adds no id the bundle already named');
+	assert.equal(registrations.length, 2);
+	assert.equal(registrations.find((entry) => entry.options.name === 'settings.models.provider-card').options.key, 'google-cloud');
+	assert.equal(registrations.find((entry) => entry.options.name === 'plugins.row.config').options.key, 'dsh-plugin-google-cloud#google-cloud');
 });
 
 test('the card reports a page that cannot reach host configuration instead of rendering undefined values', async () => {
@@ -284,33 +327,18 @@ test('the card reports a page that cannot reach host configuration instead of re
 		subscribe: () => () => {},
 		mutate: async () => false,
 	};
-	const registered = [];
-	const ctx = {
-		fiber: { entry: { options: { id: 'google-cloud' } } },
-		remote: { llm: { listConfigurableProviders: async () => ([{ provider: 'vertexai', settingsNs: 'google-cloud' }]) } },
-		configForms: {
-			get: () => controller,
-			whileServed: (namespaces, register) => register(new Set(namespaces)),
-		},
-		slots: {
-			inject: (name, body) => {
-				const iterator = body();
-				iterator.next();
-				return () => {};
-			},
-			register: (options, component) => {
-				registered.push({ options, component });
-				return () => {};
-			},
-		},
-		effect: (body) => body(),
-	};
+	const { ctx, registrations } = clientContext({
+		entryId: 'google-cloud',
+		mirror: mirrorOf(['google-cloud']),
+		controller,
+		served: new Set(['google-cloud']),
+	});
 	exported.apply(ctx);
 	await flush();
 
 	rendering.hooks = [];
 	rendering.index = 0;
-	const page = registered[0].component({ ...registered[0].options.inject(), view: 'page' });
+	const page = registrations[0].component({ ...registrations[0].options.inject(), view: 'page' });
 	assert.equal(page.type, 'p');
 	assert.match(page.props.children, /无法读写本机配置/);
 });
