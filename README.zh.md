@@ -6,9 +6,11 @@
 
 支持流式输出、工具调用、思考等级、图片输入、PayGo 服务档位（standard / priority / flex），以及生图工具 `generate_image`（Gemini 图像模型 / Imagen 4，图片直接显示在对话里）。
 
-> 兼容性：本版本面向 DSH `0.2.1-rc.3` 运行时（桌面版 `0.2.1-rc.3`）。兼容范围在 `package.json` 的 `engines.dsh` 中声明为 `^0.2.1-rc.2`，同时覆盖 `0.2.1-rc.2` 与 `0.2.1-rc.3` 及后续 `0.2.x`，并在 `0.3.0` 上主动拒绝加载。
+> 兼容性：本版本面向 DSH `0.2.0-rc.2` ~ `0.2.1-rc.3` 运行时（桌面版同）。兼容范围在 `package.json` 的 `engines.dsh` 中声明为 `^0.2.0-rc.2`，覆盖 `0.2.0-rc.2`、`0.2.1-rc.1` ~ `0.2.1-rc.3` 及后续 `0.2.x`，并在 `0.2.0-rc.1` 与 `0.3.0` 上主动拒绝加载。
 >
-> 该声明是硬性的：DSH 在导入插件前会把 `engines.dsh` 与自身运行时版本比对（声明了 `engines.dsh` 时只由它决定，忽略 `peerDependencies`），不满足的插件不会被导入，只会作为 `disabled` 条目留下并报告 `incompatible-version`。因此**不要把 `peerDependencies` 写成 `0.2.1-rc.2` 这类精确的预发布版本**——精确锁定一个 rc 会排除同版本的后续 rc，升级运行时后插件会被静默拒绝加载。`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment`、`@deepseek-ai/dsh-attachment`、`@deepseek-ai/dsh-tools` 均由运行时提供（`^0.2.1-rc.2`），插件不再自带旧版副本。
+> 该声明是硬性的：DSH 在导入插件前会先把版本要求与自身运行时版本比对，不满足的插件不会被导入，只会作为 `disabled` 条目留下并报告 `incompatible-version`。**判定依据随运行时版本而异**——`0.2.1` 起，插件自己声明的 `engines.dsh` 单独决定（忽略 `peerDependencies`）；而 `0.2.0` 线尚无 `engines.dsh` 这个概念，只校验 `peerDependencies`。因此两处必须声明同一个下界，只改 `engines.dsh` 会在 `0.2.0` 上被静默拒绝加载。也**不要把范围写成 `0.2.1-rc.2` 这类精确的预发布版本**——精确锁定一个 rc 会排除同版本的后续 rc。`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment`、`@deepseek-ai/dsh-attachment`、`@deepseek-ai/dsh-tools` 均由运行时提供（`^0.2.0-rc.2`），插件不再自带旧版副本。
+>
+> 在 `0.2.0-rc.2` 上实测：完整测试套 42 项全部通过（含真实 Cordis 上下文、`LlmRuntime`、`ToolRuntime`、端到端取流与真实落盘的生图调用）。`0.2.0` 线没有正式版，只有 `0.2.0-rc.1` 与 `0.2.0-rc.2`。
 >
 > 如需更早的 `0.1.5-rc.2` 运行时，请使用分支 `v0.1.5-rc.2`。
 
@@ -17,7 +19,7 @@
 发布物为标准 npm 插件包（`.tgz` 格式）。推荐在 DSH 的 **设置 -> 插件** 界面里安装该 `.tgz`；也可以使用 CLI：
 
 ```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.4.tgz
+dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.5.tgz
 ```
 
 升级时先用 `dsh plugin remove dsh-plugin-google-cloud` 移除旧版，再执行上述添加命令，然后重启应用以加载新的模块。

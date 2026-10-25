@@ -8,6 +8,11 @@
  * exact pin on a prerelease is the way it breaks — a pin to one rc excludes
  * every later rc of the same version.
  *
+ * Which declaration decides depends on the runtime. From 0.2.1 on an own
+ * `engines.dsh` wins outright; the 0.2.0 line has no notion of that field and
+ * checks `peerDependencies` instead. Both are asserted against the same floor
+ * so neither runtime can reject a manifest the other accepts.
+ *
  * @module dsh-plugin-google-cloud/test/manifest.test
  */
 import assert from 'node:assert/strict';
@@ -33,8 +38,10 @@ test('the manifest declares the current dsh manifest format and a bundle patch',
 });
 
 test('the manifest declares a dsh version range instead of exact prerelease pins', () => {
-	// A single `engines.dsh` range decides compatibility alone, so the peer
-	// ranges never have to be widened in lockstep with it.
+	// The floor has to live in both places. Runtimes from 0.2.1 on let an own
+	// `engines.dsh` decide alone, but the 0.2.0 line predates that field and
+	// reads only the dsh peers, so widening `engines.dsh` without widening the
+	// peers leaves the plugin rejected on 0.2.0 while looking compatible here.
 	assert.equal(typeof manifest.engines?.dsh, 'string');
 	assert.ok(manifest.engines.dsh.trim().length > 0);
 	assert.match(manifest.engines.dsh, /^[\^~]|>=/, 'a caret, tilde, or comparator range, not an exact pin');
@@ -43,6 +50,7 @@ test('the manifest declares a dsh version range instead of exact prerelease pins
 		const range = manifest.peerDependencies?.[name];
 		assert.equal(typeof range, 'string', `${name} must stay a peer dependency`);
 		assert.match(range, /^[\^~]|>=/, `${name} must not pin one prerelease: ${range}`);
+		assert.equal(range, manifest.engines.dsh, `${name} must declare the same floor as engines.dsh`);
 	}
 });
 
