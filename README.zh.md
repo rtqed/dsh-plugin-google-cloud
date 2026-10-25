@@ -16,36 +16,37 @@
 
 ## 安装
 
-有两种发布物，选一种即可：
+本插件是 **DSH bundle**（模型 provider，用 `ctx.llm` / `ctx.tools`），**不是 Tavern 插件**（那套 API 是 `ctx.tavern`：监听轮次、挂媒体）。装在哪里取决于你用哪个加载器，两者互斥：
 
-### 一键安装包（推荐，自带依赖）
+| 加载器 | 发布物 | 装到哪 |
+| --- | --- | --- |
+| **Tavern 的「用户插件」导入（只接受 zip）** | `...-bundled.zip` | `profile-data/<profile>/data/plugins/<名字>/` |
+| **DSH 自己的插件管理（`.tgz` / 目录 / 仓库）** | `....tgz` | profile 的 `node_modules` + `dsh.profile.bundles` |
 
-`dsh-plugin-google-cloud-<版本>-bundled.zip`。解压后目录里除了 `lib/`、`cordis.patch.yml`，还带一个 `node_modules/`，内含插件唯一的外部依赖 `@deepseek-ai/schemastery`（及其传递依赖 `@deepseek-ai/cosmokit`、`@standard-schema/spec`）。清单里**没有 `dependencies` 字段**，所以 DSH 的一键安装不会再报「依赖 npm 包，暂不支持一键安装」。
+### Tavern 用户插件（zip）
 
-在 DSH 的 **设置 -> 插件** 界面选择这个 zip，或解压后指向解压出来的目录：
+Tavern 把 zip 解压到 `data/plugins/<名字>/`，再用自动生成的 `.tavern-entry.mjs` 做一次**裸 `import()`** 加载 `lib/index.js`。那里没有任何宿主模块映射——`@deepseek-ai/dsh-*` 只存在于应用的 `app.asar` 内，磁盘上没有可解析的目录——所以不带依赖的包必然报 `Cannot find package '@deepseek-ai/dsh-llm'`。
 
-```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.6-bundled
-```
+`dsh-plugin-google-cloud-<版本>-bundled.zip` 就是为这条路准备的：它把 `@deepseek-ai/dsh-llm`、`dsh-tools`、`dsh-attachment`、`dsh-launch-environment`、`cordis` 连同 `schemastery` 一起放进包内的 `node_modules/`，清单里也**没有 `dependencies` 字段**，因此解压后即可裸加载。直接在 Tavern 的插件页选择这个 zip 即可。
 
-### 标准 npm 包（`.tgz`，需要包管理器解析依赖）
+> 这些宿主包取自 **DSH 0.2.1-rc.3**。升级 DSH 后需要重新打包（`DSH_HOST_VERSION=<新版本> npm run bundle`），否则包内的运行时副本会和应用里的版本不一致。
 
-`dsh-plugin-google-cloud-<版本>.tgz` 保持 npm 惯例，依赖写在 `dependencies` 里由 `pnpm` 安装。适合能正常联网解析依赖的环境：
+### DSH 插件管理（`.tgz`）
 
-```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.6.tgz
-```
+`dsh-plugin-google-cloud-<版本>.tgz` 保持 npm 惯例，依赖写在 `dependencies` 里由 `pnpm` 解析，宿主包则由 DSH 的 runtime resolution 从应用里提供——这是正常、轻量的装法（约 60 KB），前提是你走的是 DSH 自己的插件管理，而不是 Tavern 的 zip 导入。
 
-> 两种包的代码完全相同，只是依赖的提供方式不同。一键安装受限时用 zip，其余情况两者等价。
+> 注意：**不要**把 `.tgz` 或解压后的目录塞进 Tavern 的 `data/plugins/`，那条路径解析不到宿主包。反过来，**不要**用 `dsh plugin add` 装 zip——CLI 只是 pnpm 透传，不会登记 `dsh.profile.bundles`。
 
-升级时先用 `dsh plugin remove dsh-plugin-google-cloud` 移除旧版，再执行上述添加命令，然后重启应用以加载新的模块。
+升级时先移除旧版再装新版，然后重启应用以加载新的模块。
 
 ### 重新打包
 
 ```sh
-npm run bundle      # 生成 dist/dsh-plugin-google-cloud-<版本>-bundled.zip
-npm pack --pack-destination dist   # 生成标准 .tgz
+npm run bundle                      # 自包含 zip（含宿主包）
+npm pack --pack-destination dist    # 标准 tgz
 ```
+
+`npm run bundle` 会按 `files` 收载荷、装出完整闭包、从暂存清单里删掉 `dependencies`，再压成 zip；它还会在打包结束时逐个 `import()` 校验，任何一个包解析不到就直接失败，不会产出半成品。
 
 `npm run bundle` 会按 `package.json` 的 `dependencies` 现装一遍闭包、拷进 `_build/bundled/`、再把清单里的 `dependencies` 去掉后压成 zip，所以依赖升级后重跑即可，不必手工搬运。`peerDependencies` 里的 `@deepseek-ai/dsh-*` 与 `@deepseek-ai/cordis` 由宿主提供，**不会**被一起打包——否则插件会加载第二份运行时。
 

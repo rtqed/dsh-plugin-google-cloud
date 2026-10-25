@@ -1,20 +1,35 @@
 /**
  * Build the self-contained distribution of this plugin.
  *
- * DSH installs a bundle with `pnpm add`, and its one-click installer refuses a
- * package whose manifest declares runtime `dependencies` — it cannot resolve
- * them without a package manager, so it asks the author to ship the code
- * instead. `npm pack` cannot answer that: it strips `node_modules` even when
- * the directory is listed in `files`, so a tarball can never carry the closure.
+ * Two kinds of loader install this plugin, and they resolve modules differently.
  *
- * This script produces a zip that can. It stages the payload the published
- * package declares, materializes the dependency closure next to it, and then
- * rewrites the staged manifest without `dependencies` so the installer has
- * nothing left to resolve. Peers are skipped on purpose: `@deepseek-ai/dsh-*`
- * and `@deepseek-ai/cordis` are the host's own instances and must not be
- * vendored, or the plugin would load a second copy of the runtime.
+ * DSH itself installs a bundle with `pnpm add` and loads it through its own
+ * runtime resolution, so `@deepseek-ai/dsh-*` peers arrive from the host. That
+ * is the `.tgz`, and it stays as it is.
  *
- * Run it with `npm run bundle`. Both artifacts land in `dist/`.
+ * Tavern copies a zip into `profile-data/<profile>/data/plugins/<name>/` and
+ * loads it through a generated `.tavern-entry.mjs` that does a bare `import()`
+ * of `lib/index.js`. Nothing there maps the host packages — they live inside
+ * the app's `app.asar`, with no directory on disk to resolve from — so a plugin
+ * that imports them fails with `Cannot find package`. The only way to satisfy
+ * that loader is to carry the host packages in the zip, which is what this
+ * script builds.
+ *
+ * `npm pack` cannot help: it strips `node_modules` even when the directory is
+ * listed in `files`. A zip can, and Tavern extracts it verbatim (its skip list
+ * only drops `.git`, `.github` and `node_modules/.cache`).
+ *
+ * Vendoring the host packages duplicates code that also runs in the host
+ * process. That is tolerable here because nothing in this plugin's use of them
+ * depends on module identity: `LlmError` is never compared with `instanceof`,
+ * `registerAdapter` and `ctx.tools.register` are structural, and `dsh-brand`
+ * documents itself as duplicate-install-safe. Keep it that way — an
+ * `instanceof` against a host class would silently break the zip.
+ *
+ * The vendored copies are pinned to the DSH version they were taken from, so a
+ * runtime upgrade needs a rebuild. Override with `DSH_HOST_VERSION`.
+ *
+ * Run it with `npm run bundle`.
  *
  * @module dsh-plugin-google-cloud/scripts/build-bundled
  */
@@ -27,6 +42,16 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const STAGE = join(ROOT, '_build', 'bundled');
 const DIST = join(ROOT, 'dist');
 
+/** The DSH release the vendored host packages are taken from. */
+const HOST_VERSION = process.env.DSH_HOST_VERSION ?? '0.2.1-rc.3';
+
+/** Host packages this plugin imports, which a bare loader cannot resolve. */
+const HOST_PACKAGES = [
+	'@deepseek-ai/dsh-attachment',
+	'@deepseek-ai/dsh-launch-environment',
+	'@deepseek-ai/dsh-llm',
+	'@deepseek-ai/dsh-tools',
+];
 /** Run a command and fail loudly with its output when it does not succeed. */
 function run(command, args, options = {}) {
 	const result = spawnSync(command, args, { stdio: 'inherit', shell: process.platform === 'win32', ...options });
@@ -85,6 +110,18 @@ with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as arch
 const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
 const dependencies = Object.keys(pkg.dependencies ?? {});
 
+// The host packages go into `dependencies` for the install only: npm has no
+// other way to be told to fetch them, and `--legacy-peer-deps` would skip them
+// if they were left as peers. The shipped manifest drops the whole field.
+//
+// `cordis` comes along because the host packages take it as a peer, so
+// `--legacy-peer-deps` would otherwise leave it out and nothing would load.
+// Duplicating it is safe: its `symbols` are registered through `Symbol.for`,
+// so two copies agree on every key.
+const vendored = Object.fromEntries(HOST_PACKAGES.map(name => [name, HOST_VERSION]));
+vendored['@deepseek-ai/cordis'] = pkg.peerDependencies['@deepseek-ai/cordis'];
+const installDependencies = { ...(pkg.dependencies ?? {}), ...vendored };
+
 await rm(STAGE, { recursive: true, force: true });
 await mkdir(STAGE, { recursive: true });
 
@@ -93,15 +130,13 @@ for (const file of await payload(pkg)) {
 	await cp(join(ROOT, file), join(STAGE, file));
 }
 
-// The manifest goes in with its dependencies so `npm install` has something to
-// resolve; it is rewritten below, before anything is zipped.
-await writeFile(join(STAGE, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+await writeFile(join(STAGE, 'package.json'), JSON.stringify({ ...pkg, dependencies: installDependencies }, null, 2) + '\n');
 
-if (dependencies.length > 0) {
-	// `--legacy-peer-deps` keeps npm from auto-installing the host packages:
-	// a vendored copy of the runtime would load beside the real one.
-	run('npm', ['install', '--omit=dev', '--legacy-peer-deps', '--no-audit', '--no-fund', '--ignore-scripts', '--no-package-lock'], { cwd: STAGE });
-}
+// Peers are resolved rather than skipped here: the host packages themselves
+// take peers (`cordis`, `dsh-scope`, …), and a loader with no resolver needs
+// every one of them present. The plugin's own peers are already pinned in
+// `installDependencies`, so npm uses those versions for the whole tree.
+run('npm', ['install', '--omit=dev', '--no-audit', '--no-fund', '--ignore-scripts', '--no-package-lock'], { cwd: STAGE });
 
 // Bookkeeping npm leaves behind, plus absolute paths that mean nothing here.
 for (const junk of ['node_modules/.package-lock.json', 'node_modules/.bin']) {
@@ -121,7 +156,7 @@ try {
 	// No dependencies at all: nothing to bundle, nothing to check.
 }
 
-for (const name of dependencies) {
+for (const name of [...dependencies, ...Object.keys(vendored)]) {
 	if (!bundled.includes(name)) throw new Error(`${name} is declared but was not bundled`);
 }
 
@@ -132,10 +167,14 @@ const shipped = { ...pkg };
 delete shipped.dependencies;
 await writeFile(join(STAGE, 'package.json'), JSON.stringify(shipped, null, 2) + '\n');
 
-const probe = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(dependencies[0] ?? 'node:fs')}).then(() => console.log('resolved'))`], {
-	cwd: STAGE,
-	encoding: 'utf8',
-});
+// Prove the shipped tree is loadable on its own: with `dependencies` gone, the
+// only thing that can resolve these specifiers is the vendored copy beside it.
+const specifiers = [...dependencies, ...Object.keys(vendored)];
+const probe = spawnSync(
+	process.execPath,
+	['-e', `Promise.all(${JSON.stringify(specifiers)}.map(s => import(s))).then(() => console.log('resolved'))`],
+	{ cwd: STAGE, encoding: 'utf8' },
+);
 if (probe.status !== 0) throw new Error(`the bundled closure does not resolve from the staged package:\n${probe.stderr}`);
 
 await mkdir(DIST, { recursive: true });
@@ -155,4 +194,6 @@ async function walk(directory) {
 await walk(STAGE);
 
 console.log(`\n${relative(ROOT, target)}  ${(size / 1024).toFixed(1)} KiB  ${staged.length} files`);
+console.log(`host packages from dsh ${HOST_VERSION}: ${HOST_PACKAGES.join(', ')}`);
+console.log(`plus @deepseek-ai/cordis ${pkg.peerDependencies['@deepseek-ai/cordis']}`);
 console.log(`bundled: ${bundled.join(', ') || '(none)'}`);
