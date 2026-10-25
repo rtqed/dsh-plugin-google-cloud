@@ -68,6 +68,9 @@ globalThis.document = undefined;
 
 await import('../lib/client.js');
 
+/** Let the entry's directory read settle before asserting on what it installed. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 test('the bundle registers under the package name and requires the current services', () => {
 	assert.equal(loaded.spec.id, 'dsh-plugin-google-cloud');
 	const exported = loaded.spec.factory((specifier) => {
@@ -76,11 +79,11 @@ test('the bundle registers under the package name and requires the current servi
 		throw new Error(`unexpected require: ${specifier}`);
 	});
 	assert.equal(typeof exported.apply, 'function');
-	assert.deepEqual(exported.inject, ['slots', 'remote', 'remote.credentials', 'configForms']);
+	assert.deepEqual(exported.inject, ['slots', 'remote', 'remote.credentials', 'remote.llm', 'configForms']);
 	assert.ok(!exported.inject.includes('settingsScope'), 'the removed service must not be required');
 });
 
-test('apply() registers the row configuration page and the models card', () => {
+test('apply() keys both cards by the namespace the host publishes, not by a guessed id', async () => {
 	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
 
 	const controller = {
@@ -101,13 +104,24 @@ test('apply() registers the row configuration page and the models card', () => {
 		subscribe: () => () => {},
 		mutate: async () => true,
 	};
+	// The row a user-plugin loader inserted carries an id it generated itself, so the
+	// bundle's own ids never name it: only the provider directory does.
+	const servedNs = 'tavern-user-plugin-dsh-plugin-google-cloud';
 	const requestedNamespaces = [];
 	const watched = [];
 	const injected = [];
 	const registrations = [];
 	const effects = [];
 	const ctx = {
-		fiber: { entry: { options: { id: 'google-cloud' } } },
+		fiber: { entry: { options: { id: 'dsh-plugin-google-cloud' } } },
+		remote: {
+			llm: {
+				listConfigurableProviders: async () => ([
+					{ provider: 'vertexai', displayName: 'Google Vertex AI', settingsNs: servedNs, settingsPath: [], declared: false },
+					{ provider: 'some-other-route', settingsNs: 'llm-other', settingsPath: [], declared: false },
+				]),
+			},
+		},
 		configForms: {
 			get: (ns) => {
 				requestedNamespaces.push(ns);
@@ -115,7 +129,8 @@ test('apply() registers the row configuration page and the models card', () => {
 			},
 			whileServed: (namespaces, register) => {
 				watched.push(namespaces);
-				return register(new Set(namespaces));
+				// Only the host-generated id is really served; the bundle's own ids are not.
+				return register(new Set([servedNs]));
 			},
 		},
 		slots: {
@@ -137,20 +152,26 @@ test('apply() registers the row configuration page and the models card', () => {
 	};
 
 	exported.apply(ctx);
+	await flush();
 
-	assert.deepEqual(requestedNamespaces, ['google-cloud'], 'the entry namespace drives the form controller');
-	assert.equal(watched.length, 2, 'both pages wait until the host serves the namespace');
-	assert.ok(watched.every((namespaces) => namespaces.length === 1 && namespaces[0] === 'google-cloud'));
+	assert.deepEqual(effects, ['dsh-plugin-google-cloud: settings surfaces']);
+	// The first install runs on the bundle's own ids and registers nothing, because the
+	// host serves none of them; the directory then supplies the id that does match.
+	assert.deepEqual(watched, [
+		['google-cloud', 'dsh-plugin-google-cloud'],
+		[servedNs, 'google-cloud', 'dsh-plugin-google-cloud'],
+	]);
+	assert.deepEqual(requestedNamespaces, [servedNs], 'the controller is the served namespace\'s, never a guessed one');
 	assert.deepEqual(injected, ['plugins.row.config', 'settings.models.provider-card']);
 	assert.equal(registrations.length, 2);
 
 	const row = registrations.find((entry) => entry.options.name === 'plugins.row.config');
-	assert.deepEqual(row.options.key, 'dsh-plugin-google-cloud#google-cloud', 'the row key is <package>#<row id>');
+	assert.equal(row.options.key, `dsh-plugin-google-cloud#${servedNs}`, 'the row key is <package>#<row id>');
 	assert.equal(row.options.inject().scope, controller);
 	assert.equal(row.options.inject().ctx, ctx);
 
 	const models = registrations.find((entry) => entry.options.name === 'settings.models.provider-card');
-	assert.equal(models.options.key, 'google-cloud', 'the models card is keyed by the settings namespace');
+	assert.equal(models.options.key, servedNs, 'the models card is keyed by the served settings namespace');
 	assert.equal(typeof models.component, 'function');
 
 	// The migrated card renders from the shared snapshot: `summary` is one line,
@@ -219,7 +240,44 @@ test('apply() registers the row configuration page and the models card', () => {
 	assert.equal(Number(count.props.min), 1);
 });
 
-test('the card reports a page that cannot reach host configuration instead of rendering undefined values', () => {
+test('a bundle mount resolves to the ids it already had, so the pages are installed once', async () => {
+	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
+	const watched = [];
+	const ctx = {
+		fiber: { entry: { options: { id: 'google-cloud' } } },
+		remote: {
+			llm: {
+				listConfigurableProviders: async () => ([
+					{ provider: 'vertexai', displayName: 'Google Vertex AI', settingsNs: 'google-cloud', settingsPath: [], declared: false },
+				]),
+			},
+		},
+		configForms: {
+			get: () => ({ getSnapshot: () => ({ status: 'idle', value: undefined }), subscribe: () => () => {} }),
+			whileServed: (namespaces, register) => {
+				watched.push(namespaces);
+				return register(new Set(namespaces));
+			},
+		},
+		slots: {
+			inject: (name, body) => {
+				const iterator = body();
+				iterator.next();
+				return () => {};
+			},
+			register: () => () => {},
+		},
+		effect: (body) => body(),
+	};
+
+	exported.apply(ctx);
+	await flush();
+
+	assert.equal(watched.length, 1, 'the directory answer adds no id the bundle already named');
+	assert.deepEqual(watched[0], ['google-cloud']);
+});
+
+test('the card reports a page that cannot reach host configuration instead of rendering undefined values', async () => {
 	const exported = loaded.spec.factory((specifier) => (specifier === 'react' ? reactShim : jsxRuntimeShim));
 	const controller = {
 		getSnapshot: () => ({ status: 'unavailable', value: undefined, revision: undefined, writable: false, mode: 'memory' }),
@@ -229,6 +287,7 @@ test('the card reports a page that cannot reach host configuration instead of re
 	const registered = [];
 	const ctx = {
 		fiber: { entry: { options: { id: 'google-cloud' } } },
+		remote: { llm: { listConfigurableProviders: async () => ([{ provider: 'vertexai', settingsNs: 'google-cloud' }]) } },
 		configForms: {
 			get: () => controller,
 			whileServed: (namespaces, register) => register(new Set(namespaces)),
@@ -247,6 +306,7 @@ test('the card reports a page that cannot reach host configuration instead of re
 		effect: (body) => body(),
 	};
 	exported.apply(ctx);
+	await flush();
 
 	rendering.hooks = [];
 	rendering.index = 0;
