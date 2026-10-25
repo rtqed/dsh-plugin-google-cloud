@@ -6,14 +6,18 @@
 
 支持流式输出、工具调用、思考等级、图片输入、PayGo 服务档位（standard / priority / flex），以及生图工具 `generate_image`（Gemini 图像模型 / Imagen 4，图片直接显示在对话里）。
 
-> 兼容性：本版本面向 DSH `0.2.1-rc.2` 运行时（桌面版 `0.2.1-rc.2`；`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment` 均以该版本作为 `peerDependencies`，由运行时提供，插件不再自带旧版副本）。如需更早的 `0.1.5-rc.2` 运行时，请使用分支 `v0.1.5-rc.2`。
+> 兼容性：本版本面向 DSH `0.2.1-rc.3` 运行时（桌面版 `0.2.1-rc.3`）。兼容范围在 `package.json` 的 `engines.dsh` 中声明为 `^0.2.1-rc.2`，同时覆盖 `0.2.1-rc.2` 与 `0.2.1-rc.3` 及后续 `0.2.x`，并在 `0.3.0` 上主动拒绝加载。
+>
+> 该声明是硬性的：DSH 在导入插件前会把 `engines.dsh` 与自身运行时版本比对（声明了 `engines.dsh` 时只由它决定，忽略 `peerDependencies`），不满足的插件不会被导入，只会作为 `disabled` 条目留下并报告 `incompatible-version`。因此**不要把 `peerDependencies` 写成 `0.2.1-rc.2` 这类精确的预发布版本**——精确锁定一个 rc 会排除同版本的后续 rc，升级运行时后插件会被静默拒绝加载。`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-launch-environment`、`@deepseek-ai/dsh-attachment`、`@deepseek-ai/dsh-tools` 均由运行时提供（`^0.2.1-rc.2`），插件不再自带旧版副本。
+>
+> 如需更早的 `0.1.5-rc.2` 运行时，请使用分支 `v0.1.5-rc.2`。
 
 ## 安装
 
 发布物为标准 npm 插件包（`.tgz` 格式）。推荐在 DSH 的 **设置 -> 插件** 界面里安装该 `.tgz`；也可以使用 CLI：
 
 ```sh
-dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.1.tgz
+dsh plugin add C:/path/to/dsh-plugin-google-cloud-0.6.4.tgz
 ```
 
 升级时先用 `dsh plugin remove dsh-plugin-google-cloud` 移除旧版，再执行上述添加命令，然后重启应用以加载新的模块。
@@ -142,8 +146,10 @@ DSH 运行时的流式块只有 `text` / `reasoning` / `tool-call` 三种，模�
 ## 开发与验证
 
 ```sh
-npm test        # node --import ./test/harness-loader.mjs --test test/
+npm test        # node --import ./test/harness-loader.mjs --test test/*.test.mjs
 ```
+
+> `--test test/`（传目录）在 Node 22 上会以 `ERR_UNSUPPORTED_DIR_IMPORT` 失败，必须传 glob（`test/*.test.mjs`）。
 
 ### 打包发布物
 
@@ -166,9 +172,10 @@ node --import ./test/harness-loader.mjs test/imagegen.test.mjs
 node --import ./test/harness-loader.mjs test/settings.integration.test.mjs
 node --import ./test/harness-loader.mjs test/plugin.integration.test.mjs
 node --import ./test/harness-loader.mjs test/client.test.mjs
+node --import ./test/harness-loader.mjs test/manifest.test.mjs
 ```
 
-测试覆盖：请求/流式线格式与错误映射（`adapter`、`convert`、`endpoint`、`catalog`）、生图工具的线格式/解析/拒绝路径与内容块（`imagegen`，离线 stub 传输）、真实 `@deepseek-ai/dsh-settings` 的配置描述与写入（`settings.integration`）、真实 Cordis 上下文 + `LlmRuntime` + `ToolRuntime` + 真实 `LocalAttachmentStore` 的完整注册、端到端取流与一次真实落盘的生图调用（`plugin.integration`）、以及客户端 bundle 的槽位注册与渲染（`client`）。
+测试覆盖：请求/流式线格式与错误映射（`adapter`、`convert`、`endpoint`、`catalog`）、生图工具的线格式/解析/拒绝路径与内容块（`imagegen`，离线 stub 传输）、真实 `@deepseek-ai/dsh-settings` 的配置描述与写入（`settings.integration`）、真实 Cordis 上下文 + `LlmRuntime` + `ToolRuntime` + 真实 `LocalAttachmentStore` 的完整注册、端到端取流与一次真实落盘的生图调用（`plugin.integration`）、客户端 bundle 的槽位注册与渲染（`client`），以及清单兼容性声明——直接调用运行时的 `evaluatePluginCompatibility` 判定本插件在**当前装着的这一版 DSH** 上不会被拒绝加载（`manifest`）。
 
 ## 已知边界
 
